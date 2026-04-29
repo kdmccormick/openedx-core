@@ -438,24 +438,23 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         cls.text_media_type = media_api.get_or_create_media_type("text/plain")
 
     def test_add(self):
-        new_version = components_api.create_component_version(
-            self.problem.id,
-            version_num=1,
-            title="My Title",
-            created=self.now,
-            created_by=None,
-        )
         new_media = media_api.get_or_create_text_media(
             self.learning_package.id,
             self.text_media_type.id,
             text="This is some data",
             created=self.now,
         )
-        components_api.create_component_version_media(
-            new_version.pk,
-            new_media.pk,
-            path="my/path/to/hello.txt",
+        components_api.create_component_version(
+            self.problem.id,
+            version_num=1,
+            title="My Title",
+            created=self.now,
+            created_by=None,
+            media={
+                "my/path/to/hello.txt": new_media
+            }
         )
+
         # re-fetch from the database to check to see if we wrote it correctly
         new_version = components_api.get_component(self.problem.id) \
                                     .versions \
@@ -465,20 +464,83 @@ class CreateNewVersionsTestCase(ComponentTestCase):
             new_version.media.get(componentversionmedia__path="my/path/to/hello.txt")
         )
 
-        # Write the same content again, but to an absolute path (should auto-
-        # strip) the leading '/'s.
-        components_api.create_component_version_media(
-            new_version.pk,
-            new_media.pk,
-            path="//nested/path/hello.txt",
+        # Invalid paths raise ValueError
+        invalid_paths = [
+            "/absolute/paths/not-allowed.txt",
+            "   no/whitespace.txt",
+            "no/whitespace.txt   ",
+            "no\\windows\\style\\seprators",
+        ]
+        for invalid_path in invalid_paths:
+            with self.assertRaises(ValueError):
+                new_version = components_api.create_next_component_version(
+                    self.problem.id,
+                    media_to_replace={
+                        invalid_path: new_media
+                    },
+                    created=self.now,
+                )
+
+    def test_create_with_media_or_id(self):
+        """Test that we can create Media associations with Media or Media.ID."""
+        python_src_media = media_api.get_or_create_file_media(
+            self.learning_package.id,
+            self.text_media_type.id,
+            data=b"print('hello world!')",
+            created=self.now,
         )
-        new_version = components_api.get_component(self.problem.id) \
-                                    .versions \
-                                    .get(publishable_entity_version__version_num=1)
+        _problem, version = components_api.create_component_and_version(
+            self.learning_package.id,
+            component_type=self.problem_type,
+            component_code="media_problem_1",
+            title="Testing Media Associations",
+            created=self.now,
+            media={
+                'hello.py': python_src_media,
+                'hello2.py': python_src_media.id,
+                'hello.txt': b"Bytes are tested in test_bytes_content()"
+            }
+        )
         assert (
-            new_media ==
-            new_version.media.get(componentversionmedia__path="nested/path/hello.txt")
+            python_src_media ==
+            version.media.get(componentversionmedia__path="hello.py") ==
+            version.media.get(componentversionmedia__path="hello2.py")
         )
+
+        # But we don't accept None as a media value
+        with self.assertRaises(ValueError):
+            components_api.create_component_and_version(
+                self.learning_package.id,
+                component_type=self.problem_type,
+                component_code="media_problem_2",
+                title="This shouldn't work",
+                created=self.now,
+                media={
+                    "block.xml": None
+                }
+            )
+
+        # We also don't allow a different LearningPackage's Media to be assigned
+        different_lp = publishing_api.create_learning_package(
+            "different_lp", title="Media LP"
+        )
+        outside_media = media_api.get_or_create_file_media(
+            different_lp.id,
+            self.text_media_type.id,
+            data=b'Hello outside media!',
+            created=self.now,
+        )
+        with self.assertRaises(ValueError):
+            components_api.create_component_and_version(
+                self.learning_package.id,
+                component_type=self.problem_type,
+                component_code="media_problem_3",
+                title="This also shouldn't work",
+                created=self.now,
+                media={
+                    "invalid-outside-media.txt": outside_media,
+                }
+            )
 
     def test_bytes_content(self):
         bytes_media = b'raw content'
